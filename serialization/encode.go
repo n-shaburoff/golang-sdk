@@ -1,6 +1,7 @@
 package serialization
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -8,6 +9,27 @@ import (
 	"math/big"
 	"reflect"
 )
+
+// MustMarshal is the panic-on-fail version of Marshal
+func MustMarshal(value interface{}) []byte {
+	res, err := Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// Marshal returns the bytes representation of v.
+func Marshal(value interface{}) ([]byte, error) {
+	var w bytes.Buffer
+	enc := Encoder{w: &w}
+	_, err := enc.Encode(value)
+	return w.Bytes(), err
+}
+
+func NewEncoder(w io.Writer) *Encoder {
+	return &Encoder{w: w}
+}
 
 type Encoder struct {
 	w io.Writer
@@ -18,6 +40,7 @@ func (enc *Encoder) Encode(v interface{}) (int, error) {
 	return enc.encode(val)
 }
 
+// EncodeBool encodes bool value
 func (enc *Encoder) EncodeBool(v bool) (int, error) {
 	if v {
 		return enc.w.Write([]byte{1})
@@ -26,34 +49,40 @@ func (enc *Encoder) EncodeBool(v bool) (int, error) {
 	}
 }
 
+// EncodeInt32 encodes int32 value
 func (enc *Encoder) EncodeInt32(v int32) (int, error) {
 	data := make([]byte, 4)
 	binary.LittleEndian.PutUint32(data, uint32(v))
 	return enc.w.Write(data)
 }
 
+// EncodeInt64 encodes int64 value
 func (enc *Encoder) EncodeInt64(v int64) (int, error) {
 	data := make([]byte, 8)
 	binary.LittleEndian.PutUint64(data, uint64(v))
 	return enc.w.Write(data)
 }
 
+// EncodeByte encodes byte value
 func (enc *Encoder) EncodeByte(v byte) (int, error) {
 	return enc.w.Write([]byte{v})
 }
 
+// EncodeUIn32 encodes uint32 value
 func (enc *Encoder) EncodeUInt32(v uint32) (int, error) {
 	data := make([]byte, 4)
 	binary.LittleEndian.PutUint32(data, uint32(v))
 	return enc.w.Write(data)
 }
 
+// EncodeUIn64 encodes uint64 value
 func (enc *Encoder) EncodeUInt64(v uint64) (int, error) {
 	data := make([]byte, 8)
 	binary.LittleEndian.PutUint64(data, v)
 	return enc.w.Write(data)
 }
 
+// EncodeBigInt encodes big number
 func (enc *Encoder) EncodeBigInt(v big.Int) (int, error) {
 	data := v.Bytes()
 	for i := 0; i < len(data)/2; i++ {
@@ -64,6 +93,7 @@ func (enc *Encoder) EncodeBigInt(v big.Int) (int, error) {
 	return enc.w.Write(data)
 }
 
+// EncodeString encodes string value
 func (enc *Encoder) EncodeString(v string) (int, error) {
 	data := []byte(v)
 	inputLen, err := enc.EncodeUInt32(uint32(len(data)))
@@ -93,6 +123,7 @@ func (enc *Encoder) EncodeOptional(v reflect.Value) (int, error) {
 	return inputLen, err
 }
 
+// EncodeArray encodes array
 func (enc *Encoder) EncodeArray(v reflect.Value) (int, error) {
 	inputLen, err := enc.EncodeUInt32(uint32(v.Len()))
 	if err != nil {
@@ -105,6 +136,7 @@ func (enc *Encoder) EncodeArray(v reflect.Value) (int, error) {
 	return inputLen, err
 }
 
+// EncodeFixedArray encodes array with fixed size
 func (enc *Encoder) EncodeFixedArray(v reflect.Value) (int, error) {
 	if v.Type().Elem().Kind() == reflect.Uint8 {
 		// Create a slice of the underlying array for better efficiency
@@ -135,6 +167,7 @@ func (enc *Encoder) EncodeFixedArray(v reflect.Value) (int, error) {
 	return n, nil
 }
 
+// EncodeByteArray encodes byte array
 func (enc *Encoder) EncodeByteArray(v []byte) (int, error) {
 	inputLen, err := enc.EncodeUInt32(uint32(len(v)))
 	if err != nil {
@@ -147,6 +180,7 @@ func (enc *Encoder) EncodeByteArray(v []byte) (int, error) {
 	return inputLen, err
 }
 
+// EncodeFixedByteArray encodes byte array with fixed size
 func (enc *Encoder) EncodeFixedByteArray(v []byte) (int, error) {
 	return enc.w.Write(v)
 }
@@ -161,15 +195,28 @@ func (enc *Encoder) EncodeResult(v reflect.Value) (int, error) {
 		return n, err
 	}
 	if result {
-		n2, err = enc.encode(v.FieldByName(val.SuccessFieldName()))
+		vv := v.FieldByName(val.SuccessFieldName())
+
+		if !vv.IsValid() {
+			return n, errors.New(fmt.Sprintf("invalid element: %s", val.SuccessFieldName()))
+		}
+
+		n2, err = enc.encode(vv.Elem())
 	} else {
-		n2, err = enc.encode(v.FieldByName(val.ErrorFieldName()))
+		vv := v.FieldByName(val.ErrorFieldName())
+
+		if !vv.IsValid() {
+			return n, errors.New(fmt.Sprintf("invalid element: %s", val.ErrorFieldName()))
+		}
+
+		n2, err = enc.encode(vv.Elem())
 	}
 	n += n2
 
 	return n, err
 }
 
+// EncodeTuple encodes tuple
 func (enc *Encoder) EncodeTuple(v reflect.Value) (int, error) {
 	val := v.Interface().(Tuple)
 	fields := val.TupleFields()
@@ -186,8 +233,12 @@ func (enc *Encoder) EncodeTuple(v reflect.Value) (int, error) {
 	return n, nil
 }
 
+// EncodeMap encodes map
 func (enc *Encoder) EncodeMap(v reflect.Value) (int, error) {
-	n := 0
+	n, err := enc.EncodeUInt32(uint32(v.Len()))
+	if err != nil {
+		return 0, err
+	}
 	for _, key := range v.MapKeys() {
 		n2, err := enc.encode(key)
 		n += n2
@@ -205,16 +256,12 @@ func (enc *Encoder) EncodeMap(v reflect.Value) (int, error) {
 	return n, nil
 }
 
-func (enc *Encoder) EncodeURef(v reflect.Value) (int, error) {
-	// FIXME
-	return 0, nil
-}
-
 func (enc *Encoder) EncodeMarshaler(v reflect.Value) (int, error) {
 	marshaler := v.Interface().(Marshaler)
 	return marshaler.Marshal(enc.w)
 }
 
+// EncodeStruct encodes struct
 func (enc *Encoder) EncodeStruct(v reflect.Value) (int, error) {
 	var n int
 	vt := v.Type()
@@ -237,10 +284,11 @@ func (enc *Encoder) EncodeStruct(v reflect.Value) (int, error) {
 	return n, nil
 }
 
+// EncodeUnion encodes union
 func (enc *Encoder) EncodeUnion(v reflect.Value) (int, error) {
 	u := v.Interface().(Union)
 
-	vs := byte(v.FieldByName(u.SwitchFieldName()).Int())
+	vs := byte(v.FieldByName(u.SwitchFieldName()).Uint())
 	n, err := enc.EncodeByte(vs)
 
 	if err != nil {
@@ -265,6 +313,7 @@ func (enc *Encoder) EncodeUnion(v reflect.Value) (int, error) {
 	return n, err
 }
 
+// EncodeInterface encodes interface
 func (enc *Encoder) EncodeInterface(v reflect.Value) (int, error) {
 	if v.IsNil() || !v.CanInterface() {
 		return 0, errors.New("can't encode nil interface")
@@ -291,7 +340,6 @@ func (enc *Encoder) encode(v reflect.Value) (int, error) {
 		return enc.EncodeMarshaler(v)
 	}
 
-	// FIXME: URef, Key
 	switch v.Kind() {
 	case reflect.Bool:
 		return enc.EncodeBool(v.Bool())
@@ -316,6 +364,15 @@ func (enc *Encoder) encode(v reflect.Value) (int, error) {
 	case reflect.Map:
 		return enc.EncodeMap(v)
 	case reflect.Struct:
+		if val, ok := v.Interface().(U128); ok {
+			return enc.EncodeBigInt(val.Int)
+		}
+		if val, ok := v.Interface().(U256); ok {
+			return enc.EncodeBigInt(val.Int)
+		}
+		if val, ok := v.Interface().(U512); ok {
+			return enc.EncodeBigInt(val.Int)
+		}
 		if val, ok := v.Interface().(big.Int); ok {
 			return enc.EncodeBigInt(val)
 		}

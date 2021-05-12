@@ -9,6 +9,12 @@ const (
 	KeyTagSecp256k1
 )
 
+const (
+	StrKeyTagEd25519        = "ed25519"
+	StrKeyTagSecp256k1      = "secp256k1"
+	Separator          byte = 0
+)
+
 type PublicKey struct {
 	Tag        KeyTag
 	PubKeyData []byte
